@@ -2,7 +2,6 @@ import {Injectable} from '@angular/core';
 import {Observable} from 'rxjs/Observable';
 import {Subject} from 'rxjs/Subject';
 
-@Injectable()
 export class $WebSocket {
 
     private static Helpers = class {
@@ -30,6 +29,7 @@ export class $WebSocket {
     private onErrorCallbacks = [];
     private onCloseCallbacks = [];
     private readyStateConstants = {
+        'UNINITIALIZED': -1,
         'CONNECTING': 0,
         'OPEN': 1,
         'CLOSING': 2,
@@ -40,16 +40,22 @@ export class $WebSocket {
     private reconnectableStatusCodes = [4000];
     private socket: WebSocket;
     private dataStream: Subject<any>;
+    private errorMessages: Subject<any>;
     private internalConnectionState: number;
 
-    constructor(private url: string, private protocols?: Array<string>, private config?: WebSocketConfig, private binaryType?: BinaryType) {
+    constructor(private url: string, 
+        private protocols?: Array<string>, 
+        private config?: WebSocketConfig, 
+        private binaryType?: BinaryType) 
+    {
         let match = new RegExp('wss?:\/\/').test(url);
         if (!match) {
             throw new Error('Invalid url provided');
         }
-        this.config = config || {initialTimeout: 500, maxTimeout: 300000, reconnectIfNotNormalClose: false};
+        this.config = Object.assign({ initialTimeout: 500, maxTimeout: 300000, reconnectIfNotNormalClose: false }, config);
         this.binaryType = binaryType || "blob";
         this.dataStream = new Subject();
+        this.errorMessages = new Subject();
         this.connect(true);
     }
 
@@ -77,10 +83,14 @@ export class $WebSocket {
             this.socket.onerror = (ev: ErrorEvent) => {
                 // console.log('onError ', ev);
                 self.onErrorHandler(ev);
-                this.dataStream.error(ev);
+                this.errorMessages.next(ev);
             };
 
         }
+    }
+
+    getErrorStream(): Subject<any> {
+        return this.errorMessages;
     }
 
     /**
@@ -92,7 +102,7 @@ export class $WebSocket {
     send4Direct(data, binary?: boolean): boolean {
         let self = this;
         if (this.getReadyState() !== this.readyStateConstants.OPEN
-            && this.getReadyState() !== this.readyStateConstants.CONNECTING) {
+               && this.getReadyState() !== this.readyStateConstants.CONNECTING) {
             this.connect();
         }
         self.sendQueue.push({message: data, binary: binary});
@@ -100,7 +110,7 @@ export class $WebSocket {
             self.fireQueue();
             return true;
         } else {
-          return false;
+            return false;
         }
     }
 
@@ -113,13 +123,13 @@ export class $WebSocket {
      */
     send4Promise(data, binary?: boolean): Promise<any> {
         return new Promise(
-            (resolve, reject) => {
-                if (this.send4Direct(data, binary)) {
-                    return resolve();
-                } else {
-                    return reject(Error('Socket connection has been closed'));
-                }
-            }
+               (resolve, reject) => {
+                   if (this.send4Direct(data, binary)) {
+                       return resolve();
+                   } else {
+                       return reject(Error('Socket connection has been closed'));
+                   }
+               }
         )
     }
 
@@ -197,7 +207,7 @@ export class $WebSocket {
                 this.socket.send(data.message);
             } else {
                 this.socket.send(
-                    $WebSocket.Helpers.isString(data.message) ? data.message : JSON.stringify(data.message)
+                       $WebSocket.Helpers.isString(data.message) ? data.message : JSON.stringify(data.message)
                 );
             }
             // data.deferred.resolve();
@@ -256,7 +266,7 @@ export class $WebSocket {
     onCloseHandler(event: CloseEvent) {
         this.notifyCloseCallbacks(event);
         if ((this.config.reconnectIfNotNormalClose && event.code !== this.normalCloseCode)
-            || this.reconnectableStatusCodes.indexOf(event.code) > -1) {
+               || this.reconnectableStatusCodes.indexOf(event.code) > -1) {
             this.reconnect();
         } else {
             this.sendQueue = [];
@@ -269,15 +279,23 @@ export class $WebSocket {
     };
 
     reconnect() {
-        this.close(true);
+        this.close(true, true);
         let backoffDelay = this.getBackoffDelay(++this.reconnectAttempts);
         // let backoffDelaySeconds = backoffDelay / 1000;
         // console.log('Reconnecting in ' + backoffDelaySeconds + ' seconds');
-        setTimeout(() => this.connect(), backoffDelay);
+        setTimeout(() => {
+            if (this.config.reconnectIfNotNormalClose) {
+                this.connect()
+            }
+        }, backoffDelay);
         return this;
     }
 
-    close(force: boolean = false) {
+    close(force: boolean = false, keepReconnectIfNotNormalClose?: boolean) {
+        if (!keepReconnectIfNotNormalClose) {
+            this.config.reconnectIfNotNormalClose = false;
+        }
+
         if (force || !this.socket.bufferedAmount) {
             this.socket.close(this.normalCloseCode);
         }
@@ -305,22 +323,18 @@ export class $WebSocket {
 
     }
 
-    /**
-     * Could be -1 if not initzialized yet
-     * @returns {number}
-     */
     getReadyState() {
         if (this.socket == null) {
-            return -1;
+            return this.readyStateConstants.UNINITIALIZED;
         }
         return this.internalConnectionState || this.socket.readyState;
     }
 }
 
 export interface WebSocketConfig {
-    initialTimeout: number;
-    maxTimeout: number;
-    reconnectIfNotNormalClose: boolean;
+    initialTimeout?: number;
+    maxTimeout?: number;
+    reconnectIfNotNormalClose?: boolean;
 }
 
 export enum WebSocketSendMode {
@@ -328,4 +342,3 @@ export enum WebSocketSendMode {
 }
 
 export type BinaryType = "blob" | "arraybuffer";
-
